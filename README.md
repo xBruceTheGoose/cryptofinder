@@ -24,10 +24,12 @@ evm-hidden-funds-skill/
 │   └── verify_recovery.py                    # Zero-dependency state inspector, proxy detector, & tx simulator
 └── references/
     └── protocol-traps-and-patterns.md        # Deep-dive reference of selectors, ABIs, storage layouts, & traps
+
 Zero external Python dependencies: Both CLI scripts use only the Python 3 standard library (urllib.request, json, argparse) and free, keyless public RPCs and block explorer APIs (Blockscout, Routescan, Sourcify, PublicNode).
 100% Read-Only & Safe: Never asks for or accepts private keys or seed phrases.
-Quick Installation by Agent Framework
-1. Claude Code (claude)
+
+## Quick Installation by Agent Framework
+**1. Claude Code (claude)**
 
 Copy this folder into your global or project-level .claude/skills/ directory:
 
@@ -35,9 +37,9 @@ bash
 mkdir -p ~/.claude/skills
 cp -r evm-hidden-funds-skill ~/.claude/skills/evm-hidden-funds-recovery
 
-(Claude Code automatically discovers SKILL.md and invokes ./scripts/scan_evm_funds.py and ./scripts/verify_recovery.py when you ask to scan a wallet for hidden or unclaimed funds.)
+_(Claude Code automatically discovers SKILL.md and invokes ./scripts/scan_evm_funds.py and ./scripts/verify_recovery.py when you ask to scan a wallet for hidden or unclaimed funds.)_
 
-2. Hermes Agent (hermes)
+**2. Hermes Agent (hermes)**
 
 Drop the skill directory into your Hermes skills folder or register it in your agent config:
 
@@ -47,16 +49,18 @@ cp -r evm-hidden-funds-skill ~/.hermes/skills/evm-hidden-funds-recovery
 
 (Or, if using a single-file Hermes prompt slot, load PROMPT_SINGLE_FILE.md directly.)
 
-3. OpenAI Codex CLI (codex)
+**3. OpenAI Codex CLI (codex)**
 
 Copy the folder into .codex/skills/ or append SKILL.md to your workspace AGENTS.md:
 
 bash
 mkdir -p ~/.codex/skills
 cp -r evm-hidden-funds-skill ~/.codex/skills/evm-hidden-funds-recovery
+
 # Or for repo-level AGENTS.md:
 cat evm-hidden-funds-skill/SKILL.md >> AGENTS.md
-4. Gemini CLI / Google Antigravity
+
+**4. Gemini CLI / Google Antigravity**
 
 Copy the folder into your global skills directory:
 
@@ -66,15 +70,16 @@ cp -r evm-hidden-funds-skill ~/.gemini/config/skills/evm-hidden-funds-recovery
 
 Copy SKILL.md (or PROMPT_SINGLE_FILE.md) into .cursor/rules/evm-hidden-funds-recovery.mdc and place the scripts/ folder in your workspace root.
 
-6. Web Chat UIs (Claude Projects, ChatGPT Custom GPTs, Gemini Gems)
+**6. Web Chat UIs (Claude Projects, ChatGPT Custom GPTs, Gemini Gems)**
 
 Upload PROMPT_SINGLE_FILE.md and references/protocol-traps-and-patterns.md directly into the project knowledge base or system instructions.
 
-Standalone CLI Usage (Human or Agent)
+# Standalone CLI Usage (Human or Agent)
 
 You can also run the bundled forensic scripts directly from any terminal with Python 3.8+:
 
-1. Scan an Address or ENS Name
+**1. Scan an Address or ENS Name**
+
 bash
 # Fast 15-chain balance sweep + Mainnet historical anomaly scan + legacy bid scan (MoonCats, CryptoPunks)
 python3 scripts/scan_evm_funds.py brucethegoose.eth
@@ -82,7 +87,9 @@ python3 scripts/scan_evm_funds.py brucethegoose.eth
 python3 scripts/scan_evm_funds.py 0xYourAddress --chains ethereum,arbitrum,optimism,base --min-eth 0.005
 # Export structured JSON report for downstream agent analysis
 python3 scripts/scan_evm_funds.py brucethegoose.eth --json-out report.json
-2. Inspect a Candidate Contract & Simulate Recovery
+
+**2. Inspect a Candidate Contract & Simulate Recovery**
+
 bash
 # Auto-detect EIP-1167/1967 proxies, fetch ABI, and probe common refund/escrow getters at "latest"
 python3 scripts/verify_recovery.py \
