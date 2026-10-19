@@ -1,6 +1,6 @@
 # Protocol Traps, Misleading Function Names, and Recovery Patterns
 
-This reference catalogues smart contract mechanics where user funds become hidden due to counter-intuitive naming, proxy indirection, keyed storage, or multi-step state transitions.
+This reference catalogues smart contract mechanics where user funds become hidden due to counter-intuitive naming, proxy indirection, keyed storage, multi-step state transitions, or un-exited cross-chain bridge proofs.
 
 ---
 
@@ -71,7 +71,66 @@ This reference catalogues smart contract mechanics where user funds become hidde
 
 ---
 
-## 5. Etherscan Proxy Interaction Cheatsheet
+## 5. Cross-Chain & Bridged NFT Escrow Traps
+
+One of the most persistent and high-value categories of lost assets are **NFTs bridged across L1 and L2 chains where the withdrawal process was started on the child chain but never finalized on L1**.
+
+### A. Polygon PoS Bridge (`RootChainManager` & Predicates)
+* **Architecture:**
+  - Ethereum L1 `RootChainManagerProxy`: `0xA0c68C638235ee32657e8f720a23ceC1bFc77C77`
+  - Ethereum L1 `ERC721PredicateProxy`: `0xE6F45376f64e1F568BD1404C155e5fFD2F80F7AD`
+  - Ethereum L1 `MintableERC721PredicateProxy`: `0x932532a44c011c86b3e1342b2362a4b68c08390a`
+  - Ethereum L1 `ERC1155PredicateProxy`: `0x0B9020d4E32990D67559b1317c7BF0C15D6EB88f`
+* **The Trap:**
+  1. An NFT is deposited into the bridge (either directly by the user via `RootChainManager.depositFor`, or by the collection creator/deployer to distribute on Polygon OpenSea, e.g. *CryptoSkulls* in May 2021). The original NFT is locked in `ERC721PredicateProxy`.
+  2. The user calls `withdraw(uint256 tokenId)` on the Polygon child token contract (e.g. `0xd5a5ddd6f4e7d839db2978e8a4ee9923ac088cb3`). This **burns** the child NFT on Polygon.
+  3. The bridge requires submitting a cryptographic proof to Ethereum L1 via `RootChainManagerProxy.exit(bytes inputData)` (`0x3805550f`).
+  4. If the user never executes `exit(bytes)` on L1 (e.g. due to high L1 gas fees or lack of awareness), the NFT remains **permanently locked in the L1 predicate** while appearing completely gone from the child chain!
+* **How to Detect & Recover:**
+  1. Inspect Polygon child-chain outgoing token transfers for burns (`to == 0x0000000000000000000000000000000000000000` or method `withdraw(uint256)`).
+  2. For the root token on Ethereum Mainnet, check `ownerOf(tokenId)`. If the current owner is `ERC721PredicateProxy` (`0xE6F45376f64e1F568BD1404C155e5fFD2F80F7AD`), the NFT is still trapped and claimable!
+  3. Generate the 10-field RLP exit proof via Polygon's official proof API:
+     ```text
+     GET https://proof-generator.polygon.technology/api/v1/matic/exit-payload/<burnTxHash>?eventSignature=0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef
+     ```
+  4. The returned payload contains the 10 RLP fields:
+     - `0 - headerNumber`: Checkpoint block number
+     - `1 - blockProof`: Merkle leaf proof of child block in checkpoint
+     - `2 - blockNumber`: Child block number
+     - `3 - blockTime`: Child block timestamp
+     - `4 - txRoot`: Transactions root
+     - `5 - receiptRoot`: Receipts root
+     - `6 - receipt`: RLP-encoded receipt of the burn tx
+     - `7 - receiptProof`: Merkle Patricia proof of receipt
+     - `8 - branchMask`: Receipt index path mask
+     - `9 - receiptLogIndex`: Log index of the Transfer/burn event
+  5. Call `exit(bytes inputData)` on `0xA0c68C638235ee32657e8f720a23ceC1bFc77C77` on Ethereum Mainnet to unlock and receive the NFT.
+
+### B. Arbitrum Rollup Classic & Nitro Bridge (`L2ERC721Gateway` $\to$ `Outbox`)
+* **Architecture:**
+  - Ethereum L1 `L1ERC721Gateway`: `0x6c411a0516379304461ec1eac050411d78966ec4`
+  - Ethereum L1 `Outbox`: `0x0B9857ae2D4A3DBe74ffE1d7DF045bb7F96E4840`
+  - Arbitrum L2 `L2ERC721Gateway`: `0x09e9222e96e7b4ae2a40745346391a59535386bf`
+* **The Trap:**
+  1. User calls `withdrawERC721` on Arbitrum L2. The L2 token is burned and placed in the L2 outbox message queue.
+  2. After the 7-day challenge period passes, an L1 execution transaction calling `Outbox.executeTransaction(...)` must be submitted.
+  3. If not submitted, the original NFT stays locked in `L1ERC721Gateway`.
+* **Detection:** Query the user's Arbitrum withdrawal history against the Arbitrum Outbox tracker; execute the claim transaction on L1 once the assertion is confirmed.
+
+### C. Optimism & OP Stack Rollups (Optimism, Base, Zora, Blast)
+* **Architecture:**
+  - Ethereum L1 `L1ERC721Bridge`: `0x5A7749f83b81B301cAb5f48EB8516B986DAda23D` (Optimism), `0x608d943668a5b306b3a2a6b2520c1598f828a2a7` (Base)
+  - Ethereum L1 `OptimismPortal`
+* **The Trap:**
+  - 2-step withdrawal process:
+    1. `OptimismPortal.proveWithdrawalTransaction(...)` (after output root is proposed).
+    2. Wait 7-day fault dispute window.
+    3. `OptimismPortal.finalizeWithdrawalTransaction(...)`.
+  - Countless users initiate step 1 (or do neither) and never submit step 3 on L1, leaving the NFT locked in `L1ERC721Bridge`.
+
+---
+
+## 6. Etherscan Proxy Interaction Cheatsheet
 
 Many factory-deployed contracts (MISO auctions, PartyBids, Sudoswap pairs, Gnosis Safes, 0xSplits) are **EIP-1167 minimal proxies** whose bytecode is:
 ```text

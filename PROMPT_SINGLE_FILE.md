@@ -56,6 +56,8 @@ For every candidate contract `C`:
      - Staking vaults that don't mint a receipt ERC-20 are invisible to wallet scanners. Extract the `pid` from historical `deposit(uint256 pid, uint256 amount)` transactions and query `userInfo(pid, user)` at `"latest"`.
    - **Trap F — Governance Timelocks & Vesting Escrows:**
      - Completed unbonding queues (`locked(user)`, `vestedAmount(user)`, `releasable(user)`) where the lockup expired years ago.
+    - **Trap G — Unfinalized Cross-Chain & Bridged Escrow (Polygon PoS Bridge, Arbitrum Outbox, OP Stack Portal):**
+      - Assets burned/withdrawn on a child chain (e.g. `withdraw(tokenId)` on Polygon) whose cryptographic Merkle/RLP proof was never submitted to Ethereum L1 via `RootChainManager.exit(bytes inputData)`. The original L1 asset remains trapped in the L1 predicate escrow forever while appearing completely gone from the child chain. Query the bridge proof API (`https://proof-generator.polygon.technology/api/v1/matic/exit-payload/<txHash>?eventSignature=<sig>`) to generate the 10-field RLP exit payload and simulate `exit(bytes)` on L1.
 
 ### Phase 4: Mandatory Simulation & Profitability Gate
 Before presenting any finding:

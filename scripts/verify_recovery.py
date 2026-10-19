@@ -1,30 +1,22 @@
 #!/usr/bin/env python3
 """
-EVM Contract Inspector & Claim Simulator (Cross-Framework Edition)
-------------------------------------------------------------------
-Zero-dependency CLI tool to unwrap EIP-1167 / EIP-1967 proxies, inspect contract
-functions/getters, simulate withdrawal calls (`eth_call` + `eth_estimateGas` +
-`eth_createAccessList`), and generate ready-to-use Etherscan & raw hex instructions.
-
-Usage:
-  # 1. Inspect a candidate contract & probe user state:
-  python verify_recovery.py --chain Ethereum --contract 0x6727e26a7a9a5f3f1485f64a1379e73652c78355 --user 0x18C6... --inspect
-
-  # 2. Simulate a specific withdrawal call & generate Etherscan instructions:
-  python verify_recovery.py --chain Ethereum --contract 0x6727e26a7a9a5f3f1485f64a1379e73652c78355 --user 0x18C6... --sig "withdrawTokens(address)" --args "0x18C6..."
+EVM Recovery Verifier & Simulator
+Zero-dependency Python 3 script (stdlib only).
+Verifies contract state, unwraps proxies, and simulates recovery transactions via eth_call + eth_estimateGas.
 """
 
 import argparse
 import json
+import sys
 import urllib.request
 
 RPC_BY_CHAIN = {
     "Ethereum": ("https://ethereum-rpc.publicnode.com", "https://etherscan.io"),
-    "Arbitrum": ("https://arb1.arbitrum.io/rpc", "https://arbiscan.io"),
-    "Optimism": ("https://mainnet.optimism.io", "https://optimistic.etherscan.io"),
-    "Base": ("https://mainnet.base.org", "https://basescan.org"),
-    "BSC": ("https://bsc-rpc.publicnode.com", "https://bscscan.com"),
+    "Arbitrum": ("https://arbitrum-one-rpc.publicnode.com", "https://arbiscan.io"),
+    "Optimism": ("https://optimism-rpc.publicnode.com", "https://optimistic.etherscan.io"),
+    "Base": ("https://base-rpc.publicnode.com", "https://basescan.org"),
     "Polygon": ("https://polygon-bor-rpc.publicnode.com", "https://polygonscan.com"),
+    "BSC": ("https://bsc-rpc.publicnode.com", "https://bscscan.com"),
     "Avalanche": ("https://api.avax.network/ext/bc/C/rpc", "https://snowtrace.io"),
     "Fantom": ("https://rpcapi.fantom.network", "https://ftmscan.com"),
     "Gnosis": ("https://gnosis-rpc.publicnode.com", "https://gnosisscan.io"),
@@ -74,9 +66,15 @@ def encode_arg(arg_type, val):
     if arg_type == "bool":
         b = 1 if val.lower() in ("true", "1", "yes") else 0
         return hex(b)[2:].rjust(64, "0")
-    if arg_type.startswith("bytes"):
+    if arg_type == "bytes32":
         clean = val[2:] if val.startswith("0x") else val
         return clean.lower().ljust(64, "0")
+    if arg_type.startswith("bytes") and not arg_type.endswith("]"):
+        clean = val[2:] if val.startswith("0x") else val
+        raw = bytes.fromhex(clean)
+        length_hex = hex(len(raw))[2:].rjust(64, "0")
+        padded_data = clean.ljust(((len(raw) + 31) // 32) * 64, "0")
+        return (32).to_bytes(32, "big").hex() + length_hex + padded_data
     raise ValueError(f"Unsupported ABI type in simple encoder: {arg_type}")
 
 
@@ -114,21 +112,27 @@ def inspect_contract(rpc_url, explorer, contract, user):
             print(f"  {sig:30s} ({sel}) -> raw={raw_int} ({raw_int / 1e18:.6f} if 18-dec)")
 
 
-def simulate_call(rpc_url, explorer, contract, user, sig, raw_args):
+def simulate_call(rpc_url, explorer, contract, user, sig, raw_args, raw_calldata=None):
     ptype, impl = detect_proxy(rpc_url, contract)
-    sel = sha3_selector(rpc_url, sig)
-    inside = sig[sig.find("(") + 1 : sig.rfind(")")]
-    arg_types = [x.strip() for x in inside.split(",") if x.strip()]
-    arg_vals = [x.strip() for x in (raw_args or "").split(",") if x.strip()]
+    if raw_calldata:
+        calldata = raw_calldata if raw_calldata.startswith("0x") else "0x" + raw_calldata
+        sel = calldata[:10]
+        arg_types, arg_vals = [], []
+    else:
+        sel = sha3_selector(rpc_url, sig)
+        inside = sig[sig.find("(") + 1 : sig.rfind(")")]
+        arg_types = [x.strip() for x in inside.split(",") if x.strip()]
+        arg_vals = [x.strip() for x in (raw_args or "").split(",") if x.strip()]
 
-    if len(arg_types) != len(arg_vals):
-        raise ValueError(f"Signature {sig} expects {len(arg_types)} args, got {len(arg_vals)}")
+        if len(arg_types) != len(arg_vals):
+            raise ValueError(f"Signature {sig} expects {len(arg_types)} args, got {len(arg_vals)}")
 
-    encoded_args = "".join(encode_arg(t, v) for t, v in zip(arg_types, arg_vals))
-    calldata = sel + encoded_args
+        encoded_args = "".join(encode_arg(t, v) for t, v in zip(arg_types, arg_vals))
+        calldata = sel + encoded_args
 
     print(f"=== Dry-Run Simulation on {contract} ===")
-    print(f"Function Signature: {sig}")
+    if sig:
+        print(f"Function Signature: {sig}")
     print(f"4-Byte Selector:    {sel}")
     print(f"Full Hex Calldata:  {calldata}")
 
@@ -153,9 +157,10 @@ def simulate_call(rpc_url, explorer, contract, user, sig, raw_args):
         print(f"1. Link Proxy ABI (if needed): {explorer}/proxyContractChecker?a={contract}")
     print(f"2. Open Explorer Write Tab:    {explorer}/address/{contract}{tab}")
     print(f"3. Connect Wallet:             {user}")
-    print(f"4. Function to Call:           {sig}")
-    for idx, (t, v) in enumerate(zip(arg_types, arg_vals), 1):
-        print(f"   - Param {idx} ({t}): {v}")
+    if sig:
+        print(f"4. Function to Call:           {sig}")
+        for idx, (t, v) in enumerate(zip(arg_types, arg_vals), 1):
+            print(f"   - Param {idx} ({t}): {v}")
     print(f"5. Raw Calldata Fallback:      To={contract} | Value=0 ETH | Data={calldata}")
 
 
@@ -167,6 +172,7 @@ def main():
     parser.add_argument("--inspect", action="store_true", help="Inspect proxy status and probe common getters")
     parser.add_argument("--sig", help="Function signature, e.g. 'withdrawTokens(address)'")
     parser.add_argument("--args", default="", help="Comma-separated arguments matching --sig")
+    parser.add_argument("--calldata", "--raw-calldata", dest="calldata", help="Raw hex calldata to simulate directly")
     parser.add_argument("--guide", action="store_true", help="Output step-by-step Etherscan recovery guide")
     args = parser.parse_args()
 
@@ -176,10 +182,10 @@ def main():
         parser.error(f"Unsupported --chain '{args.chain}'. Choose from: {', '.join(RPC_BY_CHAIN.keys())}")
     _, (rpc_url, explorer) = chain_lookup[key]
 
-    if args.inspect or not args.sig:
+    if args.inspect or (not args.sig and not args.calldata):
         inspect_contract(rpc_url, explorer, args.contract, args.user)
-    if args.sig:
-        simulate_call(rpc_url, explorer, args.contract, args.user, args.sig, args.args)
+    if args.sig or args.calldata:
+        simulate_call(rpc_url, explorer, args.contract, args.user, args.sig, args.args, args.calldata)
 
 
 if __name__ == "__main__":

@@ -3,8 +3,8 @@ name: evm-hidden-funds-recovery
 description: >-
   Discovers, verifies, and guides users through recovering unclaimed, stuck, or forgotten
   cryptocurrency funds (native ETH/gas tokens, ERC-20s, LP positions, staking vaults,
-  failed auction commitments, NFT bids, and escrow pull-payments) across Ethereum and
-  EVM chains. Use this skill whenever a user asks to find missing/hidden/stuck crypto
+  failed auction commitments, NFT bids, unfinalized cross-chain bridge exits, and escrow pull-payments)
+  across Ethereum and EVM chains. Use this skill whenever a user asks to find missing/hidden/stuck crypto
   funds, audit a wallet or ENS name for unclaimed balances or old bids, or generate
   exact contract interaction parameters to withdraw funds via Etherscan or a wallet.
 ---
@@ -19,7 +19,7 @@ This skill provides a deterministic, model-agnostic workflow for auditing an Eth
 
 ## Why Static Scanners Miss Funds (Core Principles)
 
-Static portfolio and recovery scanners only query `balanceOf(user)` or `pendingWithdrawals(user)` against a hardcoded list of ~50 popular contracts. They systematically miss four high-value categories:
+Static portfolio and recovery scanners only query `balanceOf(user)` or `pendingWithdrawals(user)` against a hardcoded list of ~50 popular contracts. They systematically miss five high-value categories:
 
 1. **Cloned / Factory Contracts (EIP-1167 & EIP-1967 Proxies):** Individual auction deployments (e.g., SushiSwap MISO Dutch/Batch auctions), PartyBid instances, Sudoswap LP pairs, 0xSplits clones, or custom raffles deployed per-event.
 2. **Keyed Storage Mappings (`mapping(bytes5 => Request)` or `mapping(uint256 => Bid)`):** Legacy contracts like MoonCatRescue (`adoptionRequests[catId]`), CryptoPunks (`punkBids[punkIndex]`), or NFT marketplaces where deposits are keyed by an asset/auction ID rather than `msg.sender`.
@@ -28,6 +28,8 @@ Static portfolio and recovery scanners only query `balanceOf(user)` or `pendingW
    - Direct ETH transfers triggered inside `cancelAdoptionRequest(bytes5)` (MoonCatRescue).
    - Unfinalized group bids where `claim(address)` reverts until someone calls `expire()` or `finalize()` first (PartyBid).
 4. **Un-tokenized Staking, MasterChef Vaults & NFT Escrows:** Contracts where users deposited ERC-20, LP, WETH, or ERC-721 assets without receiving an ERC-20 receipt token (`userInfo(pid, user)` or `stakes(user)` instead of `balanceOf(user)`).
+5. **Unfinalized Cross-Chain & L2 Bridge Exits (Polygon PoS Bridge, Arbitrum Outbox, OP Stack Portal):**
+   - Assets burned/withdrawn on a child chain (e.g. `withdraw(tokenId)` on Polygon) whose cryptographic Merkle/RLP proof was never submitted to Ethereum L1 via `RootChainManager.exit(bytes inputData)`. The original L1 asset remains trapped in the L1 predicate escrow forever while appearing completely gone from the child chain.
 
 ---
 
@@ -44,17 +46,17 @@ python ./scripts/scan_evm_funds.py --address <0xAddress_or_ENS> --chains Ethereu
 ```
 
 **What `scan_evm_funds.py` does automatically:**
-- **ENS Resolution:** Resolves `.eth` names to their canonical `0x` address.
-- **Batched Multi-Chain Triage:** Sends a single batched JSON-RPC request per chain across 11 EVM networks (Ethereum, Arbitrum, Optimism, Base, BSC, Polygon, Avalanche, Fantom, Gnosis, Zora, Blast) to check native balances, transaction counts (`nonce`), and major wrapped/stable/governance tokens.
-- **10,000-Tx Cap Bypass:** Sweeps both `sort=asc` and `sort=desc` in parallel across Etherscan-compatible APIs (`txlist`, `txlistinternal`, `tokentx`, `tokennfttx`) so wallets with $>10,000$ transactions have zero blind spots.
+- **ENS Resolution:** Resolves `.eth` names directly on-chain via Ethereum Mainnet ENS Registry (`0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e`).
+- **Batched Multi-Chain Triage:** Sends batched JSON-RPC requests per chain across 11 EVM networks (Ethereum, Arbitrum, Optimism, Base, BSC, Polygon, Avalanche, Fantom, Gnosis, Zora, Blast) to check native balances, transaction counts (`nonce`), live ERC-20 balances, and NFT custody/escrow tracking.
+- **Cloudflare & 10,000-Tx Cap Bypass:** Uses native `curl` fallback and sweeps both `sort=asc` and `sort=desc` in parallel across explorer APIs (`txlist`, `txlistinternal`, `tokentx`, `tokennfttx`) so wallets with $>10,000$ transactions have zero blind spots.
 - **Proxy Unwrapping:** Automatically detects EIP-1167 minimal proxy clones and EIP-1967 proxy storage slots on candidate contracts.
 - **UTF-8 Reporting:** Outputs `./scan_output/candidates_report.md` and `./scan_output/scan_results.json`.
 
 ---
 
-### Phase 2: Candidate Triage (The 4 High-Signal Buckets)
+### Phase 2: Candidate Triage (The 5 High-Signal Buckets)
 
-Read `./scan_output/candidates_report.md` and evaluate every flagged contract across four buckets:
+Read `./scan_output/candidates_report.md` and evaluate every flagged contract across five buckets:
 
 1. **Bucket A — Positive Net ETH Outflow to Live ETH-Holding Contracts:**
    $$\text{Net ETH}(C) = \sum \text{ETH Sent}(U \to C) - \sum \text{Internal ETH Returned}(C \to U) > 0$$
@@ -65,13 +67,15 @@ Read `./scan_output/candidates_report.md` and evaluate every flagged contract ac
    Vaults, staking contracts, or fractionalizers where ERC-721/ERC-1155 tokens were sent via `stake`, `depositERC721`, or `multi721Deposit` and never returned.
 4. **Bucket D — Keyed Legacy Contracts & Event Log Audit:**
    Check `./scan_output/candidates_report.md` (and consult [`./references/protocol-traps-and-patterns.md`](./references/protocol-traps-and-patterns.md)) for keyed contracts (MoonCatRescue, CryptoPunks, Old ENS Registrar Deeds, Zora/SuperRare/Foundation/AsyncArt escrows).
+5. **Bucket E — Unfinalized Cross-Chain & Bridged Escrow:**
+   Child-chain burns (`withdraw(tokenId)` or transfers to `0x000...000` on Polygon, Arbitrum, Optimism) where the L1 release proof was never submitted to L1 bridges (e.g. Polygon `RootChainManager` `0xA0c68C638235ee32657e8f720a23ceC1bFc77C77`, Arbitrum `Outbox`, OP Stack `OptimismPortal`).
 
 ---
 
 ### Phase 3: Contract Inspection & Protocol Trap Lookup
 
 For each candidate contract identified in Phase 2:
-1. Consult [`./references/protocol-traps-and-patterns.md`](./references/protocol-traps-and-patterns.md) to check if the contract matches a known deceptive pattern (e.g., MISO `withdrawTokens`, MoonCat `cancelAdoptionRequest`, PartyBid `expire` $\to$ `claim`, MasterChef `userInfo`).
+1. Consult [`./references/protocol-traps-and-patterns.md`](./references/protocol-traps-and-patterns.md) to check if the contract matches a known deceptive pattern (e.g., MISO `withdrawTokens`, MoonCat `cancelAdoptionRequest`, PartyBid `expire` $\to$ `claim`, MasterChef `userInfo`, Polygon PoS Bridge `exit`).
 2. Inspect the contract's verified source code and state getters using [`./scripts/verify_recovery.py`](./scripts/verify_recovery.py) in `--inspect` mode:
    ```bash
    python ./scripts/verify_recovery.py --chain Ethereum --contract <0xContract> --user <0xUserAddress> --inspect
@@ -96,7 +100,7 @@ python ./scripts/verify_recovery.py \
 **Verification Checklist:**
 1. **`eth_call` Simulation:** Must succeed without revert. If it reverts with a state precondition (e.g., `"Party::claim: party not finalized"`), test the prerequisite transition function (e.g., `--sig "expire()"`).
 2. **`eth_estimateGas` Check:** Confirm gas cost and compare against the USD value of the recovered asset.
-3. **`eth_createAccessList` Check:** Confirm the call touches the expected storage slots or token contracts.
+3. **Bridge Proof Validation:** For cross-chain exits (e.g., Polygon `RootChainManager.exit`), verify that the 10-field RLP payload is generated via the proof generator API and simulates successfully on Ethereum L1 without reverting (`jsonrpc: "2.0", result: "0x"`).
 
 ---
 
@@ -105,9 +109,10 @@ python ./scripts/verify_recovery.py \
 Present verified recoveries clearly, ordered from highest net USD value to lowest:
 
 1. **Executive Summary:** State the exact recoverable amount (in token + USD), the contract name/type, and the original deposit transaction hash + date.
-2. **Why It Was Hidden:** Briefly explain the mechanic that trapped the funds (e.g., failed reserve auction requiring `withdrawTokens()`, active `bytes5` offer in `adoptionRequests`, unfinalized PartyBid).
-3. **Step-by-Step Etherscan Instructions:**
-   - Direct URL to `#writeContract` or `#writeProxyContract`.
+2. **Why It Was Hidden:** Briefly explain the mechanic that trapped the funds (e.g., failed reserve auction requiring `withdrawTokens()`, active `bytes5` offer in `adoptionRequests`, unfinalized PartyBid, un-exited Polygon child burn).
+3. **Step-by-Step Instructions:**
+   - Direct URL to `#writeContract` or `#writeProxyContract` on Etherscan, Snowtrace, Polygonscan, or Arbiscan.
+   - For bridged assets, provide both the official Portal Bridge UI link (e.g. `https://portal.polygon.technology/bridge`) and the direct L1 contract call.
    - If the contract is an unflagged proxy on Etherscan, include the one-click proxy linker URL: `https://etherscan.io/proxyContractChecker?a=<ContractAddress>`.
    - Exact function name and copy-pasteable parameter values.
    - Clarify whether the function transfers funds **immediately** in the same transaction or credits `pendingWithdrawals` requiring a follow-up `withdraw()` call.
