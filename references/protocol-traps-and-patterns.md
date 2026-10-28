@@ -32,6 +32,22 @@ This reference catalogues smart contract mechanics where user funds become hidde
   1. **Outbid / Sale Proceeds:** Stored in `pendingWithdrawals(address)` (`0xf3f43703`), withdrawn via `withdraw()` (`0x3ccfd60b`).
   2. **Active Bid Still Open on a Punk:** Stored in `punkBids(uint256 punkIndex)` (`0x44268632`), which returns `(bool hasBid, uint256 punkIndex, address bidder, uint256 value)`. Find `punkIndex` from historical `enterBidForPunk(uint256)` (`0x091dbfd2`) calls or `PunkBidEntered` logs (`topic2 = user`), and recover via **`withdrawBidForPunk(uint256 punkIndex)`** (`0x29165b75`).
 
+### E. KnownOrigin `ArtistAcceptingBidsV2` (`0x848b0ea643e5a352d78e2c0c12a2dd8c96fec639`)
+* **Trap:** Collectors place ETH bids via `placeBid(uint256 _editionNumber)` (`0x9979ef45`). If an edition sells out before the artist accepts the bid, the auction stops and **does not auto-refund**—the bidder must manually call `withdrawBid(uint256 _editionNumber)` (`0x217fe6c6`).
+* **How to Verify:**
+  1. Extract `_editionNumber` from the 32-byte calldata argument of `placeBid(uint256)`.
+  2. Call `highestBidForEdition(uint256 _editionNumber)` (`0x017b0d00`) -> returns `(address bidder, uint256 value)`.
+  3. If `(bidder == user && value > 0)` and `paused() == false`, simulate `withdrawBid(_editionNumber)`.
+  4. If `bidder == 0x0`, check `BidAccepted` logs (`topic0 = 0x77273c2a169296530c120eb6f1142012378aad0ed4337eac090eaf4223a1a2f1`, `topic2 = _editionNumber`)—if present, `topic3` is the `tokenId` minted to the user on KODA V2 (`0xfbeef911dc5821886e1dda71586d90ed28174b7d`).
+
+### F. CryptoKitties Core (`0x06012c8cf97bead5deae237070f9587f8e7a266d`) & Pre-ERC721 Gas Traps
+* **Trap 1 (Unindexed by `tokennfttx`):** Deployed in November 2017 prior to EIP-721 finalization (`supportsInterface` differs), so Etherscan/Routescan `tokennfttx` endpoints return `0` transfers for CryptoKitties, making owned kitties invisible to standard NFT transfer scans.
+* **Trap 2 (`tokensOfOwner` Out-of-Gas Revert):** Calling `tokensOfOwner(address)` (`0x8462151c`) via `eth_call` reverts with `out of gas` on public RPCs because it loops linearly from `kittyId = 1` to `totalSupply()` ($>2,000,000$ storage reads).
+* **How to Enumerate & Inspect:**
+  1. Check `balanceOf(address)` (`0x70a08231`) first (`scan_evm_funds.py` does this automatically in Phase 1).
+  2. Extract 32-byte arguments ($1 < \text{id} < 3,000,000$) from the user's historical transactions to `0x06012c8cf97bead5deae237070f9587f8e7a266d` (`breedWithAuto`, `createSaleAuction`, `bidOnSiringAuction`, `transfer`).
+  3. Batch `ownerOf(uint256)` (`0x6352211e`) and `getKitty(uint256)` (`0xe98b7f4d`, where the 9th 32-byte word is `generation` and 3rd word is `cooldownIndex`) to identify valuable Gen 0 / Gen 1 / Fast-cooldown kitties.
+
 ---
 
 ## 2. Legacy ENS & Naming Registrars
@@ -127,6 +143,18 @@ One of the most persistent and high-value categories of lost assets are **NFTs b
     2. Wait 7-day fault dispute window.
     3. `OptimismPortal.finalizeWithdrawalTransaction(...)`.
   - Countless users initiate step 1 (or do neither) and never submit step 3 on L1, leaving the NFT locked in `L1ERC721Bridge`.
+
+### D. Gnosis Chain $\to$ Ethereum Arbitrary Message Bridge (AMB) & NFT Mediators (`Nifty.Ink`)
+* **Architecture:**
+  - Gnosis Chain Home AMB: `0x75Df5AF045d91108662D8080fD1FEFAd6aA0bb59`
+  - Ethereum Mainnet Foreign AMB: `0x4C36d2919e407f0Cc2Ee3c993ccF8ac26d9CE64e`
+  - Nifty.Ink Gnosis Mediator: `0x73cA9C4e72fF109259cf7374F038faf950949C51` $\to$ Ethereum L1 NFT: `0xc02697c417DdAcfbe5Edbf23eDad956BC883F4fb`
+* **The Trap:**
+  - When a user calls `relayToken(uint256 _tokenId)` (`0xd4375104`) on Gnosis Chain, the NFT is transferred into the Gnosis mediator (`ownerOf(tokenId) == mediator`), so it looks "escrowed" on Gnosis forever.
+  - Meanwhile, the Home AMB emits `UserRequestForSignature(bytes32 indexed messageId, bytes encodedData)` (`topic0 = 0x520d2afde79cbd5db58755ac9480f81bc658e5c517fcae7365a3d832590b0183`).
+  - If `ForeignAMB.relayedMessages(bytes32 messageId)` (`0x21d800ec`) on Ethereum Mainnet is `false`, the user never called `executeSignatures(bytes _data, bytes _signatures)` on L1 to claim their bridged NFT! If `true`, the NFT was already minted on Ethereum L1.
+* **Automated Verification:**
+  Run `python scripts/verify_recovery.py --amb-tx <GnosisRelayTxHash> --user <0xUserAddress>` to automatically extract `messageId`, check `relayedMessages(messageId)` on Ethereum L1, and locate the minted L1 NFT and current owner.
 
 ---
 

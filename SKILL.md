@@ -47,9 +47,11 @@ python ./scripts/scan_evm_funds.py --address <0xAddress_or_ENS> --chains Ethereu
 
 **What `scan_evm_funds.py` does automatically:**
 - **ENS Resolution:** Resolves `.eth` names directly on-chain via Ethereum Mainnet ENS Registry (`0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e`).
-- **Batched Multi-Chain Triage:** Sends batched JSON-RPC requests per chain across 11 EVM networks (Ethereum, Arbitrum, Optimism, Base, BSC, Polygon, Avalanche, Fantom, Gnosis, Zora, Blast) to check native balances, transaction counts (`nonce`), live ERC-20 balances, and NFT custody/escrow tracking.
+- **Batched Multi-Chain & Legacy Keyed Triage:** Sends batched JSON-RPC requests per chain across 11 EVM networks (Ethereum, Arbitrum, Optimism, Base, BSC, Polygon, Avalanche, Fantom, Gnosis, Zora, Blast) and automatically checks MoonCatRescue (`adoptionRequests` + `pendingWithdrawals`), CryptoPunks, Old ENS Interim Registrar Deeds (`2017–2019`), 0xSplits `SplitMain`, and pre-ERC721 CryptoKitties Core.
 - **Cloudflare & 10,000-Tx Cap Bypass:** Uses native `curl` fallback and sweeps both `sort=asc` and `sort=desc` in parallel across explorer APIs (`txlist`, `txlistinternal`, `tokentx`, `tokennfttx`) so wallets with $>10,000$ transactions have zero blind spots.
-- **Proxy Unwrapping:** Automatically detects EIP-1167 minimal proxy clones and EIP-1967 proxy storage slots on candidate contracts.
+- **Phishing & Airdrop Spam Filtering:** Automatically strips unsolicited phishing ERC-20 spam (URL symbols, Telegram links, Cyrillic homoglyphs) so reports contain only legitimate tokens.
+- **Automated Candidate State Probing & Proxy Unwrapping:** Automatically detects EIP-1167 and EIP-1967 proxies, resolves on-chain `name()`/`symbol()`/`decimals()`, and probes `balanceOf(user)`, `pendingWithdrawals(user)`, `balances(user)`, `commitments(user)`, and `checkDepositorBalance()` on every Bucket A candidate contract—distinguishing 18-decimal token dust from integer NFT holdings.
+- **Live NFT Custody & Child-Chain Bridge Burn Detection:** Verifies live `ownerOf(tokenId)` on escrowed NFTs (Bucket C) and detects child-chain `withdraw(tokenId)` / bridge burns to `0x000...000` (Bucket E).
 - **UTF-8 Reporting:** Outputs `./scan_output/candidates_report.md` and `./scan_output/scan_results.json`.
 
 ---
@@ -76,11 +78,14 @@ Read `./scan_output/candidates_report.md` and evaluate every flagged contract ac
 
 For each candidate contract identified in Phase 2:
 1. Consult [`./references/protocol-traps-and-patterns.md`](./references/protocol-traps-and-patterns.md) to check if the contract matches a known deceptive pattern (e.g., MISO `withdrawTokens`, MoonCat `cancelAdoptionRequest`, PartyBid `expire` $\to$ `claim`, MasterChef `userInfo`, Polygon PoS Bridge `exit`).
-2. Inspect the contract's verified source code and state getters using [`./scripts/verify_recovery.py`](./scripts/verify_recovery.py) in `--inspect` mode:
+2. Inspect the contract's verified source code, ABI, or unverified bytecode selectors using [`./scripts/verify_recovery.py`](./scripts/verify_recovery.py) in `--inspect` mode:
    ```bash
    python ./scripts/verify_recovery.py --chain Ethereum --contract <0xContract> --user <0xUserAddress> --inspect
    ```
-   This automatically unwraps EIP-1167/EIP-1967 proxies, fetches the implementation contract's verified source/ABI, and probes common user-balance getters (`commitments`, `balances`, `pendingWithdrawals`, `deposits`, `claimed`, `userInfo`).
+   This automatically:
+   - Unwraps EIP-1167/EIP-1967 proxies and fetches the verified contract name + categorized Read/Recovery Write functions from Routescan/Blockscout.
+   - **Decompiles unverified contracts automatically** by extracting `PUSH4` 4-byte selectors from bytecode and resolving human-readable signatures via OpenChain.
+   - Probes common user-balance getters (`commitments`, `balances`, `pendingWithdrawals`, `deposits`, `claimed`, `checkDepositorBalance`, `getETHBalance`, and `userInfo(0..3, user)`).
 
 ---
 
@@ -89,12 +94,23 @@ For each candidate contract identified in Phase 2:
 **NEVER** report claimable funds to a user based solely on historical transactions. You **MUST** verify that the withdrawal/refund transaction succeeds at the `latest` block using [`./scripts/verify_recovery.py`](./scripts/verify_recovery.py):
 
 ```bash
+# Standard contract recovery simulation:
 python ./scripts/verify_recovery.py \
   --chain Ethereum \
   --contract <0xContract> \
   --user <0xUserAddress> \
   --sig "withdrawTokens(address)" \
   --args "<0xUserAddress>"
+
+# Automated Polygon PoS Bridge exit proof generation & L1 simulation:
+python ./scripts/verify_recovery.py \
+  --user <0xUserAddress> \
+  --polygon-burn-tx <0xPolygonBurnTxHash>
+
+# Automated Gnosis -> Ethereum AMB cross-chain relay & L1 NFT check:
+python ./scripts/verify_recovery.py \
+  --user <0xUserAddress> \
+  --amb-tx <0xGnosisRelayTxHash>
 ```
 
 **Verification Checklist:**
