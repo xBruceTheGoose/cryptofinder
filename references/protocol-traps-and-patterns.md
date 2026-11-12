@@ -168,3 +168,57 @@ Many factory-deployed contracts (MISO auctions, PartyBids, Sudoswap pairs, Gnosi
   `https://etherscan.io/proxyContractChecker?a=<ProxyAddress>`
   Clicking **Save** immediately links the implementation ABI on Etherscan and unlocks `#writeProxyContract`.
 * Always provide the **raw hex calldata** (`Selector + ABI-encoded arguments`) alongside Etherscan instructions so advanced users can submit a `0 ETH` transaction with raw hex data directly from Rabby, MetaMask, or Frame without waiting on Etherscan's UI.
+
+---
+
+## 7. Delayed Withdrawals, Queues & Claim-Only Positions
+
+### A. Withdrawal Requests and Unstake Queues
+* **Trap:** A withdrawal request may not transfer assets immediately. The user’s claim can instead be recorded under a request ID, ticket, NFT, or queue entry. A wallet balance of zero does not establish that the request is complete—or that it is lost.
+* **How to Verify:**
+  1. Inspect the user’s transaction history and relevant request/queue events, such as `WithdrawalRequested`, `WithdrawRequested`, or `WithdrawalQueued`. Event names and indexing vary by protocol.
+  2. Check protocol-specific state for the request ID, owner, amount or shares, request timestamp, and status. Look for getters such as `getWithdrawalRequest`, `withdrawalRequests`, `pendingWithdrawals`, or `claimable`.
+  3. Determine whether the request is pending, ready to claim, canceled, or already claimed. Check protocol-specific timing, epoch, liquidity, and finalization requirements.
+  4. Simulate the documented claim or cancellation path with `eth_call` before submitting a transaction. Do not assume a generic `claim()` or `withdraw()` function applies.
+
+### B. Vesting Schedules, Streams & Locked Allocations
+* **Trap:** Tokens may be assigned to a schedule or stream rather than held in the user’s wallet. The amount currently transferable can differ from the total allocation, and claiming may be separate from vesting.
+* **How to Verify:**
+  1. Search the user’s history for schedule-creation, stream-creation, grant, or vesting events and identify the associated schedule or stream ID.
+  2. Check the recipient, start and end times, cliff, total allocation, amount already claimed, and current vested or withdrawable amount using the protocol’s documented getters.
+  3. Confirm whether the user is the beneficiary and whether the schedule is revocable, transferable, or subject to additional conditions.
+  4. Use only the protocol’s verified claim or withdrawal path; a vested amount may not be immediately withdrawable if a cliff or other condition remains.
+
+### C. Signature-, Merkle- & Epoch-Based Claims
+* **Trap:** An allocation can be claimable only with a valid proof or authorization. The relevant state may be keyed by an epoch, campaign, nonce, index, or bitmap rather than by a simple token balance.
+* **How to Verify:**
+  1. Identify the correct campaign, distribution, epoch, or Merkle root from official protocol sources and on-chain state.
+  2. Check whether the user’s claim is already consumed using the protocol’s `isClaimed`, `claimedBitMap`, `nonces`, or equivalent state. These names are examples, not standard interfaces.
+  3. Obtain proofs or signatures only from the official distributor or a source whose integrity can be independently verified. Confirm the chain, contract, token, recipient, amount, and expiry before signing.
+  4. Simulate the exact claim transaction and verify the destination and amount. Never share a private key or seed phrase to obtain a claim.
+
+### D. Position and Receipt-Token Accounting
+* **Trap:** A user’s economic claim may be represented by shares, an NFT, a receipt token, or an account entry—not by a direct balance of the underlying asset. Conversely, holding a receipt token does not guarantee that the underlying asset is immediately redeemable.
+* **How to Verify:**
+  1. Identify the position representation from deposit, mint, stake, or position-creation transactions and events.
+  2. Check the position owner and protocol-specific state, including shares, accrued rewards, liquidity, debt, and redemption limits.
+  3. Determine which actions are required to realize the position: for example, `unstake`, `redeem`, `decreaseLiquidity`, `collect`, or a separate reward claim.
+  4. Review fees, slippage, lockups, pause state, and any required intermediate steps before interacting.
+
+### E. External Finalization or Keeper-Triggered Release
+* **Trap:** A request may require a separate transaction to finalize it, or depend on an oracle, validator, keeper, challenge period, or governance action. A submitted request is not proof that the release is executable now.
+* **How to Verify:**
+  1. Find the request’s current on-chain status and the protocol’s documented finalization conditions.
+  2. Check whether the delay has elapsed and whether the required oracle, validator, or cross-chain message has been processed.
+  3. Confirm who is permitted to finalize: the user, any caller, a designated keeper, or an administrator.
+  4. If finalization is permissioned or appears stalled, consult the protocol’s official documentation and support channels. Do not assume an administrator can or will release funds.
+
+### General Triage Checklist
+* What on-chain record represents the user’s claim: address balance, request ID, token ID, shares, stream ID, epoch, nonce, or proof?
+* Which chain and contract hold the relevant state, and is the contract a proxy or a protocol-specific deployment?
+* Does the record show a pending, claimable, canceled, expired, or completed state?
+* Are there delays, minimums, fees, liquidity constraints, pauses, or other prerequisites?
+* Is a proof, signature, oracle update, or separate finalization transaction required?
+* Has the exact proposed transaction been simulated, and do its recipient and asset match the expected recovery?
+
+Function names and storage layouts are protocol-specific. Treat selectors and getter names as discovery clues, not as proof that a contract implements a particular interface. Verify the deployed contract, implementation, chain, and current protocol documentation before recommending or submitting a transaction.
